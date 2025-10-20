@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Application
+logs/
+events/
+*.db
+*.sqlite
+config.local.json
+
+# Media files
+recordings/
+*.mp4
+*.avi
+*.jpg
+*.png
+!static/*.jpg
+!static/*.png

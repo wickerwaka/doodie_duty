@@ -1,0 +1,27 @@
+# Core dependencies
+opencv-python==4.10.0.84
+numpy==1.26.4
+
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.12
+websockets==13.1
+
+# ML/Detection
+ultralytics==8.3.38  # YOLOv8
+Pillow==10.4.0
+
+# Database and storage
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+greenlet==3.2.4
+
+# Configuration
+pydantic==2.10.3
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# Utilities
+aiofiles==24.1.0
+python-dateutil==2.9.0
