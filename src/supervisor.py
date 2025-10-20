@@ -62,7 +62,12 @@ class DogSupervisor:
 
         self.is_running = True
         self.monitor_task = asyncio.create_task(self._monitor_loop())
-        print("Dog supervisor started")
+        print(f"[SUPERVISOR] 🚀 Dog supervisor started")
+        print(f"[SUPERVISOR] Camera: {self.camera.get_camera_info()}")
+        print(f"[SUPERVISOR] Alert delay: {self.alert_delay_seconds}s")
+        print(f"[SUPERVISOR] Check interval: {self.check_interval_seconds}s")
+        print(f"[SUPERVISOR] Event handlers: {len(self.event_handlers)}")
+        print(f"[SUPERVISOR] State change handlers: {len(self.state_change_handlers)}")
 
     async def stop(self):
         self.is_running = False
@@ -74,7 +79,11 @@ class DogSupervisor:
                 pass
 
         await self.camera.stop()
-        print("Dog supervisor stopped")
+        print(f"\n[SUPERVISOR] 🛑 Dog supervisor stopped")
+        print(f"[SUPERVISOR] Total events recorded: {len(self.event_history)}")
+        if self.unsupervised_start_time:
+            duration = (datetime.now() - self.unsupervised_start_time).total_seconds()
+            print(f"[SUPERVISOR] Final unsupervised duration: {duration:.1f}s")
 
     async def _monitor_loop(self):
         while self.is_running:
@@ -82,7 +91,7 @@ class DogSupervisor:
                 await self._check_supervision()
                 await asyncio.sleep(self.check_interval_seconds)
             except Exception as e:
-                print(f"Monitor loop error: {e}")
+                print(f"[SUPERVISOR] ❌ Monitor loop error: {e}")
                 await asyncio.sleep(1)
 
     async def _check_supervision(self):
@@ -95,6 +104,10 @@ class DogSupervisor:
         )
 
         new_state = self._determine_state(is_unsupervised, len(dogs), len(humans))
+
+        # Only log detection details if there are detections or state changes
+        if len(dogs) > 0 or len(humans) > 0 or new_state != self.current_state:
+            print(f"[DETECT] Dogs: {len(dogs)}, Humans: {len(humans)}, State: {new_state.value}")
 
         if new_state != self.current_state:
             self._handle_state_change(self.current_state, new_state, dogs, humans, frame)
@@ -118,11 +131,28 @@ class DogSupervisor:
         humans: List[Detection],
         frame: np.ndarray
     ):
-        print(f"State change: {old_state.value} -> {new_state.value}")
+        timestamp = datetime.now()
+        print(f"\n[STATE] ========== STATE CHANGE ==========")
+        print(f"[STATE] Time: {timestamp.strftime('%H:%M:%S')}")
+        print(f"[STATE] Transition: {old_state.value} → {new_state.value}")
+        print(f"[STATE] Dogs detected: {len(dogs)}")
+        print(f"[STATE] Humans detected: {len(humans)}")
+
+        if dogs:
+            for i, dog in enumerate(dogs):
+                print(f"[STATE]   Dog {i+1}: confidence={dog.confidence:.2f}, bbox={dog.bbox}")
+
+        if humans:
+            for i, human in enumerate(humans):
+                print(f"[STATE]   Human {i+1}: confidence={human.confidence:.2f}, bbox={human.bbox}")
 
         if new_state == SupervisionState.UNSUPERVISED:
-            self.unsupervised_start_time = datetime.now()
+            self.unsupervised_start_time = timestamp
+            print(f"[STATE] ⚠️  Starting unsupervised timer")
         else:
+            if self.unsupervised_start_time:
+                duration = (timestamp - self.unsupervised_start_time).total_seconds()
+                print(f"[STATE] ✅ Ending unsupervised period (lasted {duration:.1f}s)")
             self.unsupervised_start_time = None
 
         event = SupervisionEvent(
@@ -136,13 +166,17 @@ class DogSupervisor:
 
         self._trigger_event(event)
 
-        for handler in self.state_change_handlers:
+        print(f"[STATE] Notifying {len(self.state_change_handlers)} state change handlers")
+        for i, handler in enumerate(self.state_change_handlers):
             try:
                 handler(old_state, new_state)
+                print(f"[STATE] Handler {i+1}: ✓")
             except Exception as e:
-                print(f"State change handler error: {e}")
+                print(f"[STATE] Handler {i+1}: ✗ Error - {e}")
 
         self.current_state = new_state
+        print(f"[STATE] Current state updated to: {new_state.value}")
+        print(f"[STATE] ========================================\n")
 
     def _check_alert_condition(self, dogs: List[Detection], humans: List[Detection], frame: np.ndarray):
         if self.unsupervised_start_time is None:
@@ -153,7 +187,10 @@ class DogSupervisor:
         if (duration_unsupervised.total_seconds() >= self.alert_delay_seconds
             and self.current_state != SupervisionState.ALERT):
 
-            print(f"ALERT: Dog unsupervised for {duration_unsupervised.total_seconds():.1f} seconds")
+            print(f"\n[ALERT] 🚨 ALERT TRIGGERED! 🚨")
+            print(f"[ALERT] Dog has been unsupervised for {duration_unsupervised.total_seconds():.1f} seconds")
+            print(f"[ALERT] Threshold: {self.alert_delay_seconds} seconds")
+            print(f"[ALERT] Dogs: {len(dogs)}, Humans: {len(humans)}")
 
             event = SupervisionEvent(
                 state=SupervisionState.ALERT,
@@ -167,17 +204,23 @@ class DogSupervisor:
 
             self._trigger_event(event)
             self.current_state = SupervisionState.ALERT
+            print(f"[ALERT] State changed to ALERT")
+            print(f"[ALERT] Event triggered for action handlers\n")
 
     def _trigger_event(self, event: SupervisionEvent):
         self.event_history.append(event)
         if len(self.event_history) > self.max_history_size:
             self.event_history.pop(0)
 
-        for handler in self.event_handlers:
+        print(f"[EVENT] Triggering event: {event.state.value}")
+        print(f"[EVENT] Notifying {len(self.event_handlers)} event handlers")
+
+        for i, handler in enumerate(self.event_handlers):
             try:
                 handler(event)
+                print(f"[EVENT] Handler {i+1}: ✓")
             except Exception as e:
-                print(f"Event handler error: {e}")
+                print(f"[EVENT] Handler {i+1}: ✗ Error - {e}")
 
     def add_event_handler(self, handler: Callable[[SupervisionEvent], None]):
         self.event_handlers.append(handler)

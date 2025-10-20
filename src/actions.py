@@ -17,8 +17,10 @@ class ActionTrigger:
 
     async def trigger(self, event_data: Dict[str, Any]) -> bool:
         if not self.enabled:
+            print(f"[ACTION] {self.name} is disabled, skipping")
             return False
 
+        print(f"[ACTION] Triggering {self.name} at {datetime.now().strftime('%H:%M:%S')}")
         self.last_triggered = datetime.now()
         return await self._execute(event_data)
 
@@ -33,28 +35,37 @@ class SoundAlert(ActionTrigger):
         self.system = platform.system()
 
     async def _execute(self, event_data: Dict[str, Any]) -> bool:
+        print(f"[SOUND] Executing sound alert on {self.system}")
+        print(f"[SOUND] Event data: dogs={event_data.get('dogs_detected')}, humans={event_data.get('humans_detected')}, duration={event_data.get('duration_unsupervised')}s")
+
         try:
             if self.system == "Darwin":  # macOS
                 if self.sound_file and os.path.exists(self.sound_file):
+                    print(f"[SOUND] Playing custom sound: {self.sound_file}")
                     subprocess.run(["afplay", self.sound_file], check=False)
                 else:
+                    print(f"[SOUND] Using system TTS for alert")
                     subprocess.run(["say", "Alert! Dog detected unsupervised"], check=False)
             elif self.system == "Linux":
                 if self.sound_file and os.path.exists(self.sound_file):
+                    print(f"[SOUND] Playing custom sound: {self.sound_file}")
                     subprocess.run(["aplay", self.sound_file], check=False)
                 else:
+                    print(f"[SOUND] Using espeak for alert")
                     subprocess.run(["espeak", "Alert! Dog detected unsupervised"], check=False)
             elif self.system == "Windows":
                 import winsound
                 if self.sound_file and os.path.exists(self.sound_file):
+                    print(f"[SOUND] Playing custom sound: {self.sound_file}")
                     winsound.PlaySound(self.sound_file, winsound.SND_FILENAME)
                 else:
+                    print(f"[SOUND] Using system beep")
                     winsound.Beep(1000, 1000)
 
-            print(f"Sound alert triggered at {datetime.now()}")
+            print(f"[SOUND] ✓ Sound alert completed successfully")
             return True
         except Exception as e:
-            print(f"Sound alert failed: {e}")
+            print(f"[SOUND] ✗ Sound alert failed: {e}")
             return False
 
 
@@ -67,6 +78,7 @@ class FileLogger(ActionTrigger):
     async def _execute(self, event_data: Dict[str, Any]) -> bool:
         try:
             log_file = self.log_dir / f"events_{datetime.now().strftime('%Y%m%d')}.log"
+            print(f"[LOG] Writing event to {log_file}")
 
             log_entry = {
                 "timestamp": datetime.now().isoformat(),
@@ -76,12 +88,15 @@ class FileLogger(ActionTrigger):
                 "duration_unsupervised": event_data.get("duration_unsupervised")
             }
 
+            print(f"[LOG] Entry: {json.dumps(log_entry)}")
+
             async with aiofiles.open(log_file, mode='a') as f:
                 await f.write(json.dumps(log_entry) + "\n")
 
+            print(f"[LOG] ✓ Event logged successfully")
             return True
         except Exception as e:
-            print(f"File logging failed: {e}")
+            print(f"[LOG] ✗ File logging failed: {e}")
             return False
 
 
@@ -96,24 +111,30 @@ class VideoRecorder(ActionTrigger):
 
     async def _execute(self, event_data: Dict[str, Any]) -> bool:
         if self.is_recording:
-            print("Already recording, skipping new recording request")
+            print("[VIDEO] ⚠ Already recording, skipping new recording request")
             return False
+
+        print(f"[VIDEO] Starting {self.duration_seconds}s video recording")
+        print(f"[VIDEO] Event: dogs={event_data.get('dogs_detected')}, humans={event_data.get('humans_detected')}")
 
         try:
             self.is_recording = True
             camera = event_data.get("camera")
             if not camera:
-                print("No camera provided for recording")
+                print("[VIDEO] ✗ No camera provided for recording")
                 return False
 
             filename = self.output_dir / f"alert_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+            print(f"[VIDEO] Recording to: {filename}")
+
             self.recording_task = asyncio.create_task(
                 self._record_video(camera, filename, self.duration_seconds)
             )
 
+            print(f"[VIDEO] ✓ Recording task started")
             return True
         except Exception as e:
-            print(f"Video recording failed: {e}")
+            print(f"[VIDEO] ✗ Video recording failed: {e}")
             self.is_recording = False
             return False
 
@@ -141,12 +162,14 @@ class VideoRecorder(ActionTrigger):
                 await asyncio.sleep(1.0 / fps)
 
             out.release()
-            print(f"Recording saved: {filename} ({frames_written} frames)")
+            print(f"[VIDEO] ✓ Recording completed: {filename}")
+            print(f"[VIDEO] Saved {frames_written} frames ({frames_written/fps:.1f}s of video)")
 
         except Exception as e:
-            print(f"Recording error: {e}")
+            print(f"[VIDEO] ✗ Recording error: {e}")
         finally:
             self.is_recording = False
+            print(f"[VIDEO] Recording state reset")
 
 
 class NotificationSender(ActionTrigger):
@@ -157,6 +180,7 @@ class NotificationSender(ActionTrigger):
     async def _execute(self, event_data: Dict[str, Any]) -> bool:
         try:
             if self.webhook_url:
+                print(f"[WEBHOOK] Sending notification to webhook")
                 import aiohttp
                 async with aiohttp.ClientSession() as session:
                     payload = {
@@ -165,16 +189,20 @@ class NotificationSender(ActionTrigger):
                         "dogs": event_data.get("dogs_detected", 0),
                         "humans": event_data.get("humans_detected", 0)
                     }
+                    print(f"[WEBHOOK] Payload: {json.dumps(payload)}")
                     async with session.post(self.webhook_url, json=payload) as resp:
                         if resp.status == 200:
-                            print("Notification sent successfully")
+                            print(f"[WEBHOOK] ✓ Notification sent successfully (status={resp.status})")
                             return True
+                        else:
+                            print(f"[WEBHOOK] ✗ Failed with status {resp.status}")
+                            return False
             else:
-                print("No webhook URL configured")
+                print("[WEBHOOK] No webhook URL configured, skipping")
                 return False
 
         except Exception as e:
-            print(f"Notification failed: {e}")
+            print(f"[WEBHOOK] ✗ Notification failed: {e}")
             return False
 
 
@@ -201,24 +229,39 @@ class ActionManager:
 
     async def trigger_actions(self, event_data: Dict[str, Any]):
         current_time = datetime.now()
+        print(f"\n[ACTIONS] ========== TRIGGERING ACTIONS ==========")
+        print(f"[ACTIONS] Time: {current_time.strftime('%H:%M:%S')}")
+        print(f"[ACTIONS] State: {event_data.get('state')}")
+        print(f"[ACTIONS] Dogs: {event_data.get('dogs_detected')}, Humans: {event_data.get('humans_detected')}")
+        print(f"[ACTIONS] Duration unsupervised: {event_data.get('duration_unsupervised')}s")
+        print(f"[ACTIONS] Active actions: {', '.join(self.actions.keys())}")
 
+        triggered_count = 0
         for name, action in self.actions.items():
             if not action.enabled:
+                print(f"[ACTIONS] {name}: disabled")
                 continue
 
             if name in self.last_trigger_time:
                 time_since_last = (current_time - self.last_trigger_time[name]).total_seconds()
                 if time_since_last < self.cooldown_seconds:
-                    print(f"Action {name} on cooldown ({self.cooldown_seconds - time_since_last:.0f}s remaining)")
+                    print(f"[ACTIONS] {name}: on cooldown ({self.cooldown_seconds - time_since_last:.0f}s remaining)")
                     continue
 
             try:
+                print(f"[ACTIONS] Executing {name}...")
                 success = await action.trigger(event_data)
                 if success:
                     self.last_trigger_time[name] = current_time
-                    print(f"Action {name} triggered successfully")
+                    print(f"[ACTIONS] {name}: ✓ SUCCESS")
+                    triggered_count += 1
+                else:
+                    print(f"[ACTIONS] {name}: ✗ FAILED")
             except Exception as e:
-                print(f"Action {name} failed: {e}")
+                print(f"[ACTIONS] {name}: ✗ EXCEPTION - {e}")
+
+        print(f"[ACTIONS] Triggered {triggered_count}/{len(self.actions)} actions")
+        print(f"[ACTIONS] ========================================\n")
 
     def get_status(self) -> Dict[str, Any]:
         return {

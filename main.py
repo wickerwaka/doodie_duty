@@ -28,7 +28,8 @@ class DoodieDutyApp:
         self.web_app = None
 
     async def initialize(self):
-        print("Initializing Doodie Duty...")
+        print(f"\n[MAIN] 🚀 Initializing Doodie Duty...")
+        print(f"[MAIN] Config: camera={self.config.camera_index}, alert_delay={self.config.alert_delay_seconds}s")
 
         await self.database.init_db()
 
@@ -55,18 +56,24 @@ class DoodieDutyApp:
 
         self.web_app = WebApp(self.supervisor)
 
-        print("Initialization complete!")
+        print(f"[MAIN] ✓ Initialization complete!\n")
 
     def _setup_actions(self):
+        print(f"[MAIN] 🎛️ Setting up action triggers...")
         self.action_manager.cooldown_seconds = self.config.action_cooldown_seconds
+        print(f"[MAIN] Action cooldown: {self.config.action_cooldown_seconds}s")
+
+        actions_enabled = []
 
         if self.config.enable_sound_alert:
             sound_alert = SoundAlert(self.config.sound_file)
             self.action_manager.add_action(sound_alert)
+            actions_enabled.append(f"sound_alert ({sound_alert.system})")
 
         if self.config.enable_file_logging:
             file_logger = FileLogger(self.config.log_directory)
             self.action_manager.add_action(file_logger)
+            actions_enabled.append(f"file_logger ({self.config.log_directory})")
 
         if self.config.enable_video_recording:
             video_recorder = VideoRecorder(
@@ -74,25 +81,42 @@ class DoodieDutyApp:
                 self.config.recording_duration
             )
             self.action_manager.add_action(video_recorder)
+            actions_enabled.append(f"video_recorder ({self.config.recording_duration}s)")
 
         if self.config.notification_webhook:
             notification = NotificationSender(self.config.notification_webhook)
             self.action_manager.add_action(notification)
+            actions_enabled.append("webhook_notification")
+
+        if actions_enabled:
+            print(f"[MAIN] Enabled actions: {', '.join(actions_enabled)}")
+        else:
+            print(f"[MAIN] ⚠️ No actions enabled!")
 
     def _setup_event_handlers(self):
         async def on_event(event: SupervisionEvent):
-            await self.database.log_event(
-                state=event.state.value,
-                dogs_detected=event.dogs_detected,
-                humans_detected=event.humans_detected,
-                duration_unsupervised=event.duration_unsupervised.total_seconds()
-                if event.duration_unsupervised else None,
-                frame_snapshot=event.frame_snapshot,
-                detections=event.detections,
-                alert_triggered=(event.state == SupervisionState.ALERT)
-            )
+            print(f"[MAIN] ⚙️ Processing supervision event: {event.state.value}")
+            print(f"[MAIN] Event timestamp: {event.timestamp.strftime('%H:%M:%S')}")
 
+            # Log to database
+            try:
+                event_id = await self.database.log_event(
+                    state=event.state.value,
+                    dogs_detected=event.dogs_detected,
+                    humans_detected=event.humans_detected,
+                    duration_unsupervised=event.duration_unsupervised.total_seconds()
+                    if event.duration_unsupervised else None,
+                    frame_snapshot=event.frame_snapshot,
+                    detections=event.detections,
+                    alert_triggered=(event.state == SupervisionState.ALERT)
+                )
+                print(f"[MAIN] ✓ Event logged to database (ID: {event_id})")
+            except Exception as e:
+                print(f"[MAIN] ✗ Database logging failed: {e}")
+
+            # Trigger actions if it's an alert
             if event.state == SupervisionState.ALERT:
+                print(f"[MAIN] 🚨 ALERT event - preparing to trigger actions")
                 event_data = {
                     "state": event.state.value,
                     "dogs_detected": event.dogs_detected,
@@ -101,9 +125,15 @@ class DoodieDutyApp:
                     if event.duration_unsupervised else None,
                     "camera": self.supervisor.camera
                 }
-                await self.action_manager.trigger_actions(event_data)
+                try:
+                    await self.action_manager.trigger_actions(event_data)
+                except Exception as e:
+                    print(f"[MAIN] ✗ Action triggering failed: {e}")
+            else:
+                print(f"[MAIN] Non-alert event, no actions triggered")
 
         self.supervisor.add_event_handler(on_event)
+        print(f"[MAIN] Event handler registered")
 
     async def run(self):
         await self.initialize()
@@ -116,24 +146,34 @@ class DoodieDutyApp:
         )
         server = uvicorn.Server(config)
 
-        print(f"\n🐕 Doodie Duty is running!")
-        print(f"📡 Web interface: http://{self.config.host}:{self.config.port}")
-        print(f"📷 Camera: Device {self.config.camera_index}")
-        print(f"⏰ Alert delay: {self.config.alert_delay_seconds} seconds")
-        print("\nPress Ctrl+C to stop...\n")
+        print(f"\n[MAIN] ========================================")
+        print(f"[MAIN] 🐕 DOODIE DUTY IS RUNNING!")
+        print(f"[MAIN] ========================================")
+        print(f"[MAIN] 📡 Web interface: http://{self.config.host}:{self.config.port}")
+        print(f"[MAIN] 📷 Camera: Device {self.config.camera_index}")
+        print(f"[MAIN] ⏰ Alert delay: {self.config.alert_delay_seconds} seconds")
+        print(f"[MAIN] 🎛️ Actions: {len(self.action_manager.actions)} configured")
+        print(f"[MAIN] ========================================")
+        print(f"[MAIN] Press Ctrl+C to stop...\n")
 
         await server.serve()
 
     async def cleanup(self):
-        print("\nShutting down...")
+        print(f"\n[MAIN] 🛑 Shutting down...")
         if self.supervisor:
             await self.supervisor.stop()
 
-        deleted = await self.database.cleanup_old_events(self.config.cleanup_days)
-        if deleted > 0:
-            print(f"Cleaned up {deleted} old events")
+        print(f"[MAIN] 🧪 Cleaning up old database events...")
+        try:
+            deleted = await self.database.cleanup_old_events(self.config.cleanup_days)
+            if deleted > 0:
+                print(f"[MAIN] ✓ Cleaned up {deleted} old events")
+            else:
+                print(f"[MAIN] No old events to clean up")
+        except Exception as e:
+            print(f"[MAIN] ✗ Cleanup failed: {e}")
 
-        print("Goodbye! 🐕")
+        print(f"[MAIN] 😭 Goodbye! 🐕")
 
 
 async def main():
