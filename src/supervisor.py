@@ -217,10 +217,24 @@ class DogSupervisor:
 
         for i, handler in enumerate(self.event_handlers):
             try:
-                handler(event)
-                print(f"[EVENT] Handler {i+1}: ✓")
+                # Check if handler is async
+                if asyncio.iscoroutinefunction(handler):
+                    # Schedule async handler to run
+                    asyncio.create_task(self._call_async_handler(handler, event, i+1))
+                else:
+                    # Call sync handler directly
+                    handler(event)
+                    print(f"[EVENT] Handler {i+1}: ✓")
             except Exception as e:
                 print(f"[EVENT] Handler {i+1}: ✗ Error - {e}")
+
+    async def _call_async_handler(self, handler, event, handler_num):
+        """Helper to call async event handlers"""
+        try:
+            await handler(event)
+            print(f"[EVENT] Handler {handler_num}: ✓ (async)")
+        except Exception as e:
+            print(f"[EVENT] Handler {handler_num}: ✗ Error - {e} (async)")
 
     def add_event_handler(self, handler: Callable[[SupervisionEvent], None]):
         self.event_handlers.append(handler)

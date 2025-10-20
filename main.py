@@ -104,7 +104,7 @@ class DoodieDutyApp:
                     state=event.state.value,
                     dogs_detected=event.dogs_detected,
                     humans_detected=event.humans_detected,
-                    duration_unsupervised=event.duration_unsupervised.total_seconds()
+                    duration_unsupervised_seconds=event.duration_unsupervised.total_seconds()
                     if event.duration_unsupervised else None,
                     frame_snapshot=event.frame_snapshot,
                     detections=event.detections,
