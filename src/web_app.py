@@ -1,5 +1,5 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 import cv2
 import numpy as np
@@ -87,8 +87,8 @@ class WebApp:
             return await self.get_recordings_list()
 
         @self.app.get("/recordings/{filename}")
-        async def get_recording(filename: str):
-            return await self.serve_recording(filename)
+        async def get_recording(request: Request, filename: str):
+            return await self.serve_recording(request, filename)
 
     def setup_event_handlers(self):
         def on_event(event: SupervisionEvent):
@@ -194,8 +194,8 @@ class WebApp:
         except Exception:
             return 0.0
 
-    async def serve_recording(self, filename: str):
-        """Serve a recording file"""
+    async def serve_recording(self, request: Request, filename: str):
+        """Serve a recording file with proper range request support for video streaming"""
         # Validate filename to prevent directory traversal
         if not filename.endswith('.mp4') or '/' in filename or '\\' in filename:
             raise HTTPException(status_code=400, detail="Invalid filename")
@@ -206,10 +206,83 @@ class WebApp:
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Recording not found")
 
-        return FileResponse(
-            path=str(file_path),
-            media_type="video/mp4",
-            filename=filename
+        # Get file size
+        file_size = file_path.stat().st_size
+
+        # Parse range header
+        range_header = request.headers.get('range')
+
+        if range_header:
+            # Handle range request
+            return await self._serve_video_range(file_path, range_header, file_size)
+        else:
+            # Serve entire file
+            return await self._serve_video_full(file_path, file_size)
+
+    async def _serve_video_range(self, file_path: Path, range_header: str, file_size: int):
+        """Handle HTTP range requests for video streaming"""
+        try:
+            # Parse range header (e.g., "bytes=0-1023" or "bytes=1024-")
+            range_match = range_header.replace('bytes=', '').split('-')
+            start = int(range_match[0]) if range_match[0] else 0
+            end = int(range_match[1]) if range_match[1] else file_size - 1
+
+            # Ensure valid range
+            start = max(0, start)
+            end = min(file_size - 1, end)
+            content_length = end - start + 1
+
+            def generate():
+                with open(file_path, 'rb') as f:
+                    f.seek(start)
+                    remaining = content_length
+                    while remaining > 0:
+                        chunk_size = min(8192, remaining)  # 8KB chunks
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+
+            headers = {
+                'Content-Range': f'bytes {start}-{end}/{file_size}',
+                'Accept-Ranges': 'bytes',
+                'Content-Length': str(content_length),
+                'Content-Type': 'video/mp4',
+            }
+
+            return StreamingResponse(
+                generate(),
+                status_code=206,
+                headers=headers,
+                media_type='video/mp4'
+            )
+
+        except (ValueError, IndexError):
+            # Invalid range header, serve full file
+            return await self._serve_video_full(file_path, file_size)
+
+    async def _serve_video_full(self, file_path: Path, file_size: int):
+        """Serve the entire video file"""
+        def generate():
+            with open(file_path, 'rb') as f:
+                while True:
+                    chunk = f.read(8192)  # 8KB chunks
+                    if not chunk:
+                        break
+                    yield chunk
+
+        headers = {
+            'Accept-Ranges': 'bytes',
+            'Content-Length': str(file_size),
+            'Content-Type': 'video/mp4',
+        }
+
+        return StreamingResponse(
+            generate(),
+            status_code=200,
+            headers=headers,
+            media_type='video/mp4'
         )
 
     def get_index_html(self) -> str:
