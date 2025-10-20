@@ -1,5 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import cv2
 import numpy as np
@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import List
 import io
 import base64
+import os
+from pathlib import Path
 
 from .camera import AsyncCameraCapture
 from .detector import DogHumanDetector
@@ -80,6 +82,14 @@ class WebApp:
             await self.supervisor.stop()
             return {"message": "Monitoring stopped"}
 
+        @self.app.get("/recordings")
+        async def get_recordings():
+            return await self.get_recordings_list()
+
+        @self.app.get("/recordings/{filename}")
+        async def get_recording(filename: str):
+            return await self.serve_recording(filename)
+
     def setup_event_handlers(self):
         def on_event(event: SupervisionEvent):
             asyncio.create_task(self.broadcast_event(event))
@@ -132,6 +142,75 @@ class WebApp:
         for connection in disconnected:
             if connection in self.active_connections:
                 self.active_connections.remove(connection)
+
+    async def get_recordings_list(self):
+        """Get list of all recording files with metadata"""
+        recordings_dir = Path("recordings")
+        if not recordings_dir.exists():
+            return {"recordings": []}
+
+        recordings = []
+        for file_path in recordings_dir.glob("alert_*.mp4"):
+            try:
+                stat = file_path.stat()
+
+                # Parse timestamp from filename (alert_YYYYMMDD_HHMMSS.mp4)
+                name_parts = file_path.stem.split("_")
+                if len(name_parts) >= 3:
+                    date_str = name_parts[1]
+                    time_str = name_parts[2]
+                    timestamp_str = f"{date_str}_{time_str}"
+                    created_time = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                else:
+                    created_time = datetime.fromtimestamp(stat.st_mtime)
+
+                recordings.append({
+                    "filename": file_path.name,
+                    "size": stat.st_size,
+                    "created": created_time.isoformat(),
+                    "duration": await self.get_video_duration(file_path),
+                    "url": f"/recordings/{file_path.name}"
+                })
+            except Exception as e:
+                print(f"[WEB] Error processing recording {file_path.name}: {e}")
+
+        # Sort by creation time, newest first
+        recordings.sort(key=lambda x: x["created"], reverse=True)
+
+        return {"recordings": recordings}
+
+    async def get_video_duration(self, file_path: Path) -> float:
+        """Get video duration in seconds"""
+        try:
+            cap = cv2.VideoCapture(str(file_path))
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                cap.release()
+
+                if fps > 0:
+                    return frame_count / fps
+            return 0.0
+        except Exception:
+            return 0.0
+
+    async def serve_recording(self, filename: str):
+        """Serve a recording file"""
+        # Validate filename to prevent directory traversal
+        if not filename.endswith('.mp4') or '/' in filename or '\\' in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+
+        recordings_dir = Path("recordings")
+        file_path = recordings_dir / filename
+
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Recording not found")
+
+        return FileResponse(
+            path=str(file_path),
+            media_type="video/mp4",
+            filename=filename
+        )
 
     def get_index_html(self) -> str:
         return '''
@@ -217,6 +296,93 @@ class WebApp:
         .state-supervised { color: #4CAF50; }
         .state-unsupervised { color: #ff9800; }
         .state-alert { color: #f44336; font-weight: bold; }
+        .recordings {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .recording-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+            gap: 15px;
+        }
+        .recording-item:last-child {
+            border-bottom: none;
+        }
+        .recording-info {
+            flex: 1;
+        }
+        .recording-title {
+            font-weight: bold;
+            color: #333;
+        }
+        .recording-meta {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+        .recording-controls {
+            display: flex;
+            gap: 10px;
+        }
+        .play-btn {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .play-btn:hover {
+            background: #1976D2;
+        }
+        .download-btn {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .download-btn:hover {
+            background: #45a049;
+        }
+        #videoModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+        }
+        .modal-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            max-width: 90%;
+            max-height: 90%;
+        }
+        .close-btn {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -253,6 +419,23 @@ class WebApp:
         <div class="events">
             <h2>Recent Events</h2>
             <div id="eventsList"></div>
+        </div>
+
+        <div class="recordings">
+            <h2>📹 Alert Recordings</h2>
+            <div id="recordingsList">
+                <p>Loading recordings...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Modal -->
+    <div id="videoModal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeVideoModal()">&times;</button>
+            <video id="modalVideo" controls style="width: 100%; max-width: 800px;">
+                Your browser does not support the video tag.
+            </video>
         </div>
     </div>
 
@@ -386,8 +569,116 @@ class WebApp:
             }
         }
 
+        async function loadRecordings() {
+            try {
+                const response = await fetch("/recordings");
+                if (response.ok) {
+                    const data = await response.json();
+                    displayRecordings(data.recordings);
+                } else {
+                    document.getElementById("recordingsList").innerHTML = "<p>Failed to load recordings</p>";
+                }
+            } catch (error) {
+                console.error("Error loading recordings:", error);
+                document.getElementById("recordingsList").innerHTML = "<p>Error loading recordings</p>";
+            }
+        }
+
+        function displayRecordings(recordings) {
+            const recordingsList = document.getElementById("recordingsList");
+
+            if (recordings.length === 0) {
+                recordingsList.innerHTML = "<p>No recordings available</p>";
+                return;
+            }
+
+            const recordingsHtml = recordings.map(recording => {
+                const date = new Date(recording.created);
+                const formattedDate = date.toLocaleString();
+                const fileSizeMB = (recording.size / (1024 * 1024)).toFixed(1);
+                const durationStr = recording.duration ? `${recording.duration.toFixed(1)}s` : 'Unknown';
+
+                return `
+                    <div class="recording-item">
+                        <div class="recording-info">
+                            <div class="recording-title">${recording.filename}</div>
+                            <div class="recording-meta">
+                                📅 ${formattedDate} | ⏱️ ${durationStr} | 💾 ${fileSizeMB} MB
+                            </div>
+                        </div>
+                        <div class="recording-controls">
+                            <button class="play-btn" onclick="playRecording('${recording.url}', '${recording.filename}')">
+                                ▶️ Play
+                            </button>
+                            <button class="download-btn" onclick="downloadRecording('${recording.url}', '${recording.filename}')">
+                                ⬇️ Download
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            recordingsList.innerHTML = recordingsHtml;
+        }
+
+        function playRecording(url, filename) {
+            const modal = document.getElementById("videoModal");
+            const video = document.getElementById("modalVideo");
+
+            video.src = url;
+            modal.style.display = "block";
+
+            // Add title to modal
+            const existingTitle = modal.querySelector('.video-title');
+            if (existingTitle) {
+                existingTitle.remove();
+            }
+
+            const title = document.createElement('h3');
+            title.className = 'video-title';
+            title.textContent = filename;
+            title.style.margin = '0 0 15px 0';
+
+            const modalContent = modal.querySelector('.modal-content');
+            modalContent.insertBefore(title, video);
+        }
+
+        function closeVideoModal() {
+            const modal = document.getElementById("videoModal");
+            const video = document.getElementById("modalVideo");
+
+            modal.style.display = "none";
+            video.pause();
+            video.src = "";
+        }
+
+        function downloadRecording(url, filename) {
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById("videoModal");
+            if (event.target === modal) {
+                closeVideoModal();
+            }
+        }
+
+        // Close modal with Escape key
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeVideoModal();
+            }
+        });
+
         connectWebSocket();
         loadRecentEvents();
+        loadRecordings();
     </script>
 </body>
 </html>
