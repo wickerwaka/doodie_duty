@@ -142,12 +142,37 @@ class VideoRecorder(ActionTrigger):
         import cv2
 
         try:
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # Try browser-compatible codecs in order of preference
             fps = 20
             frame_width = 640
             frame_height = 480
 
-            out = cv2.VideoWriter(str(filename), fourcc, fps, (frame_width, frame_height))
+            codecs_to_try = [
+                ('avc1', cv2.VideoWriter_fourcc(*'avc1')),  # H.264 (best browser support)
+                ('H264', cv2.VideoWriter_fourcc(*'H264')),  # H.264 alternative
+                ('XVID', cv2.VideoWriter_fourcc(*'XVID')),  # MPEG-4 Part 2
+                ('mp4v', cv2.VideoWriter_fourcc(*'mp4v')),  # Fallback
+            ]
+
+            out = None
+            used_codec = None
+
+            for codec_name, fourcc in codecs_to_try:
+                print(f"[VIDEO] Trying codec: {codec_name}")
+                test_out = cv2.VideoWriter(str(filename), fourcc, fps, (frame_width, frame_height))
+
+                if test_out.isOpened():
+                    out = test_out
+                    used_codec = codec_name
+                    print(f"[VIDEO] ✓ Using codec: {codec_name}")
+                    break
+                else:
+                    test_out.release()
+                    print(f"[VIDEO] ✗ Codec {codec_name} failed")
+
+            if out is None:
+                print(f"[VIDEO] ✗ All codecs failed")
+                return False
 
             start_time = datetime.now()
             frames_written = 0
@@ -164,6 +189,7 @@ class VideoRecorder(ActionTrigger):
             out.release()
             print(f"[VIDEO] ✓ Recording completed: {filename}")
             print(f"[VIDEO] Saved {frames_written} frames ({frames_written/fps:.1f}s of video)")
+            print(f"[VIDEO] Codec used: {used_codec}")
 
         except Exception as e:
             print(f"[VIDEO] ✗ Recording error: {e}")
