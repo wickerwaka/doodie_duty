@@ -328,6 +328,23 @@ class WebApp:
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             text-align: center;
         }
+        .video-controls {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .video-controls label {
+            font-weight: bold;
+            color: #333;
+        }
+        .video-controls select {
+            margin-left: 8px;
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
         #videoFeed {
             max-width: 100%;
             height: auto;
@@ -482,7 +499,24 @@ class WebApp:
         </div>
 
         <div class="video-container">
-            <img id="videoFeed" src="" alt="Camera Feed">
+            <div class="video-controls">
+                <label>
+                    <input type="checkbox" id="enableVideo" checked> Enable Video Feed
+                </label>
+                <label>
+                    Frame Rate:
+                    <select id="frameRate">
+                        <option value="5000">0.2 FPS (5s)</option>
+                        <option value="2000">0.5 FPS (2s)</option>
+                        <option value="1000" selected>1 FPS (1s)</option>
+                        <option value="500">2 FPS (0.5s)</option>
+                        <option value="200">5 FPS (0.2s)</option>
+                        <option value="100">10 FPS (0.1s)</option>
+                    </select>
+                </label>
+            </div>
+            <img id="videoFeed" src="" alt="Camera Feed" style="display: block;">
+            <div id="videoPlaceholder" style="display: none; padding: 40px; background: #f0f0f0; border-radius: 4px; color: #666;">📹 Video feed disabled - Use controls above to enable</div>
             <div class="controls">
                 <button id="startBtn" onclick="startMonitoring()">Start Monitoring</button>
                 <button id="stopBtn" onclick="stopMonitoring()" disabled>Stop Monitoring</button>
@@ -516,6 +550,8 @@ class WebApp:
         let ws = null;
         let frameInterval = null;
         let isMonitoring = false;
+        let videoEnabled = true;
+        let frameRateMs = 1000; // Default to 1 FPS
 
         function connectWebSocket() {
             ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -545,11 +581,18 @@ class WebApp:
         }
 
         function startFrameUpdates() {
-            frameInterval = setInterval(() => {
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: "get_frame" }));
-                }
-            }, 100);
+            updateFrameInterval();
+        }
+
+        function updateFrameInterval() {
+            stopFrameUpdates();
+            if (videoEnabled && ws && ws.readyState === WebSocket.OPEN) {
+                frameInterval = setInterval(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "get_frame" }));
+                    }
+                }, frameRateMs);
+            }
         }
 
         function stopFrameUpdates() {
@@ -560,8 +603,10 @@ class WebApp:
         }
 
         function updateFrame(data) {
-            const img = document.getElementById("videoFeed");
-            img.src = `data:image/jpeg;base64,${data.image}`;
+            if (videoEnabled) {
+                const img = document.getElementById("videoFeed");
+                img.src = `data:image/jpeg;base64,${data.image}`;
+            }
 
             document.getElementById("dogCount").textContent = data.dogs;
             document.getElementById("humanCount").textContent = data.humans;
@@ -747,6 +792,28 @@ class WebApp:
             if (event.key === 'Escape') {
                 closeVideoModal();
             }
+        });
+
+        // Video control event listeners
+        document.getElementById('enableVideo').addEventListener('change', function() {
+            videoEnabled = this.checked;
+            const videoFeed = document.getElementById('videoFeed');
+            const placeholder = document.getElementById('videoPlaceholder');
+
+            if (videoEnabled) {
+                videoFeed.style.display = 'block';
+                placeholder.style.display = 'none';
+                updateFrameInterval();
+            } else {
+                videoFeed.style.display = 'none';
+                placeholder.style.display = 'block';
+                stopFrameUpdates();
+            }
+        });
+
+        document.getElementById('frameRate').addEventListener('change', function() {
+            frameRateMs = parseInt(this.value);
+            updateFrameInterval();
         });
 
         connectWebSocket();

@@ -7,7 +7,12 @@
       "Bash(python:*)",
       "Bash(timeout:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git remote add:*)",
+      "Bash(git push:*)",
+      "Bash(ssh:*)",
+      "Bash(curl:*)",
+      "Bash(open test_ui_simple.html)"
     ],
     "deny": [],
     "ask": []
