@@ -15,7 +15,8 @@ from src.actions import (
     SoundAlert,
     FileLogger,
     VideoRecorder,
-    NotificationSender
+    NotificationSender,
+    ImageCapture
 )
 
 
@@ -54,7 +55,7 @@ class DoodieDutyApp:
         self._setup_actions()
         self._setup_event_handlers()
 
-        self.web_app = WebApp(self.supervisor)
+        self.web_app = WebApp(self.supervisor, self.database)
 
         print(f"[MAIN] ✓ Initialization complete!\n")
 
@@ -88,6 +89,11 @@ class DoodieDutyApp:
             self.action_manager.add_action(notification)
             actions_enabled.append("webhook_notification")
 
+        # Add image capture action - always enabled for state changes and alerts
+        image_capture = ImageCapture("captures")
+        self.action_manager.add_action(image_capture)
+        actions_enabled.append("image_capture (captures)")
+
         if actions_enabled:
             print(f"[MAIN] Enabled actions: {', '.join(actions_enabled)}")
         else:
@@ -98,7 +104,30 @@ class DoodieDutyApp:
             print(f"[MAIN] ⚙️ Processing supervision event: {event.state.value}")
             print(f"[MAIN] Event timestamp: {event.timestamp.strftime('%H:%M:%S')}")
 
-            # Log to database
+            captured_image_filename = None
+
+            # Trigger actions for alerts OR state changes (to capture images)
+            if event.state == SupervisionState.ALERT or True:  # Always trigger for image capture
+                print(f"[MAIN] 🚨 Event - preparing to trigger actions (including image capture)")
+                event_data = {
+                    "state": event.state.value,
+                    "dogs_detected": event.dogs_detected,
+                    "humans_detected": event.humans_detected,
+                    "duration_unsupervised": event.duration_unsupervised.total_seconds()
+                    if event.duration_unsupervised else None,
+                    "camera": self.supervisor.camera,
+                    "detector": self.supervisor.detector
+                }
+                try:
+                    await self.action_manager.trigger_actions(event_data)
+                    # Check if image was captured
+                    if "captured_image" in event_data:
+                        captured_image_filename = event_data["captured_image"]["filename"]
+                        print(f"[MAIN] 📸 Image captured: {captured_image_filename}")
+                except Exception as e:
+                    print(f"[MAIN] ✗ Action triggering failed: {e}")
+
+            # Log to database with captured image info
             try:
                 event_id = await self.database.log_event(
                     state=event.state.value,
@@ -108,29 +137,12 @@ class DoodieDutyApp:
                     if event.duration_unsupervised else None,
                     frame_snapshot=event.frame_snapshot,
                     detections=event.detections,
-                    alert_triggered=(event.state == SupervisionState.ALERT)
+                    alert_triggered=(event.state == SupervisionState.ALERT),
+                    captured_image_filename=captured_image_filename
                 )
                 print(f"[MAIN] ✓ Event logged to database (ID: {event_id})")
             except Exception as e:
                 print(f"[MAIN] ✗ Database logging failed: {e}")
-
-            # Trigger actions if it's an alert
-            if event.state == SupervisionState.ALERT:
-                print(f"[MAIN] 🚨 ALERT event - preparing to trigger actions")
-                event_data = {
-                    "state": event.state.value,
-                    "dogs_detected": event.dogs_detected,
-                    "humans_detected": event.humans_detected,
-                    "duration_unsupervised": event.duration_unsupervised.total_seconds()
-                    if event.duration_unsupervised else None,
-                    "camera": self.supervisor.camera
-                }
-                try:
-                    await self.action_manager.trigger_actions(event_data)
-                except Exception as e:
-                    print(f"[MAIN] ✗ Action triggering failed: {e}")
-            else:
-                print(f"[MAIN] Non-alert event, no actions triggered")
 
         self.supervisor.add_event_handler(on_event)
         print(f"[MAIN] Event handler registered")

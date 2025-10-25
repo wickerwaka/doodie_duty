@@ -24,6 +24,7 @@ class EventLog(Base):
     frame_snapshot = Column(LargeBinary, nullable=True)
     detections_json = Column(String, nullable=True)
     alert_triggered = Column(Boolean, default=False)
+    captured_image_filename = Column(String, nullable=True)
 
 
 class Database:
@@ -46,7 +47,8 @@ class Database:
         duration_unsupervised_seconds: Optional[float] = None,
         frame_snapshot: Optional[np.ndarray] = None,
         detections: Optional[list] = None,
-        alert_triggered: bool = False
+        alert_triggered: bool = False,
+        captured_image_filename: Optional[str] = None
     ) -> int:
         async with self.async_session() as session:
             frame_data = None
@@ -75,7 +77,8 @@ class Database:
                 duration_unsupervised_seconds=duration_unsupervised_seconds,
                 frame_snapshot=frame_data,
                 detections_json=detections_json,
-                alert_triggered=alert_triggered
+                alert_triggered=alert_triggered,
+                captured_image_filename=captured_image_filename
             )
 
             session.add(event)
@@ -120,7 +123,9 @@ class Database:
                     "humans_detected": event.humans_detected,
                     "duration_unsupervised_seconds": event.duration_unsupervised_seconds,
                     "alert_triggered": event.alert_triggered,
-                    "has_snapshot": event.frame_snapshot is not None
+                    "has_snapshot": event.frame_snapshot is not None,
+                    "captured_image_filename": event.captured_image_filename,
+                    "captured_image_url": f"/captures/{event.captured_image_filename}" if event.captured_image_filename else None
                 }
                 for event in events
             ]

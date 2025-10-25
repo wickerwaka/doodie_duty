@@ -7,6 +7,8 @@ import asyncio
 import json
 import aiofiles
 from pathlib import Path
+import cv2
+import base64
 
 
 class ActionTrigger:
@@ -229,6 +231,64 @@ class NotificationSender(ActionTrigger):
 
         except Exception as e:
             print(f"[WEBHOOK] ✗ Notification failed: {e}")
+            return False
+
+
+class ImageCapture(ActionTrigger):
+    def __init__(self, output_dir: str = "captures"):
+        super().__init__("image_capture")
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(exist_ok=True)
+
+    async def _execute(self, event_data: Dict[str, Any]) -> bool:
+        try:
+            camera = event_data.get("camera")
+            if not camera:
+                print("[IMAGE] ✗ No camera provided for image capture")
+                return False
+
+            # Get current frame
+            frame = camera.get_frame_sync()
+            if frame is None:
+                print("[IMAGE] ✗ Failed to get frame from camera")
+                return False
+
+            # Add detection annotations if detector available
+            detector = event_data.get("detector")
+            if detector:
+                is_unsupervised, dogs, humans = detector.is_dog_unsupervised(frame)
+                all_detections = dogs + humans
+                frame = detector.draw_detections(frame, all_detections)
+
+            # Generate filename with timestamp and state
+            timestamp = datetime.now()
+            state = event_data.get("state", "unknown")
+            filename = f"capture_{timestamp.strftime('%Y%m%d_%H%M%S')}_{state}.jpg"
+            filepath = self.output_dir / filename
+
+            print(f"[IMAGE] Capturing image: {filename}")
+            print(f"[IMAGE] Event: dogs={event_data.get('dogs_detected')}, humans={event_data.get('humans_detected')}, state={state}")
+
+            # Save image with high quality
+            success = cv2.imwrite(str(filepath), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+            if success:
+                # Store image info in event data for later reference
+                event_data["captured_image"] = {
+                    "filename": filename,
+                    "filepath": str(filepath),
+                    "timestamp": timestamp.isoformat(),
+                    "state": state
+                }
+
+                print(f"[IMAGE] ✓ Image captured successfully: {filepath}")
+                return True
+            else:
+                print(f"[IMAGE] ✗ Failed to save image: {filepath}")
+                return False
+
+        except Exception as e:
+            print(f"[IMAGE] ✗ Image capture failed: {e}")
             return False
 
 

@@ -18,9 +18,10 @@ from .supervisor import DogSupervisor, SupervisionEvent, SupervisionState
 
 
 class WebApp:
-    def __init__(self, supervisor: DogSupervisor):
+    def __init__(self, supervisor: DogSupervisor, database=None):
         self.app = FastAPI(title="Doodie Duty")
         self.supervisor = supervisor
+        self.database = database
         self.active_connections: List[WebSocket] = []
 
         self.setup_routes()
@@ -37,18 +38,23 @@ class WebApp:
 
         @self.app.get("/events")
         async def get_events(limit: int = 10):
-            events = self.supervisor.get_recent_events(limit)
-            return [
-                {
-                    "state": event.state.value,
-                    "timestamp": event.timestamp.isoformat(),
-                    "dogs_detected": event.dogs_detected,
-                    "humans_detected": event.humans_detected,
-                    "duration_unsupervised": event.duration_unsupervised.total_seconds()
-                    if event.duration_unsupervised else None
-                }
-                for event in events
-            ]
+            if self.database:
+                events = await self.database.get_events(limit=limit)
+                return events
+            else:
+                # Fallback to supervisor if no database
+                events = self.supervisor.get_recent_events(limit)
+                return [
+                    {
+                        "state": event.state.value,
+                        "timestamp": event.timestamp.isoformat(),
+                        "dogs_detected": event.dogs_detected,
+                        "humans_detected": event.humans_detected,
+                        "duration_unsupervised": event.duration_unsupervised.total_seconds()
+                        if event.duration_unsupervised else None
+                    }
+                    for event in events
+                ]
 
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
@@ -89,6 +95,14 @@ class WebApp:
         @self.app.get("/recordings/{filename}")
         async def get_recording(request: Request, filename: str):
             return await self.serve_recording(request, filename)
+
+        @self.app.get("/captures")
+        async def get_captures():
+            return await self.get_captures_list()
+
+        @self.app.get("/captures/{filename}")
+        async def get_capture(filename: str):
+            return await self.serve_capture(filename)
 
     def setup_event_handlers(self):
         def on_event(event: SupervisionEvent):
@@ -285,6 +299,62 @@ class WebApp:
             media_type='video/mp4'
         )
 
+    async def get_captures_list(self):
+        """Get list of all captured images with metadata"""
+        captures_dir = Path("captures")
+        if not captures_dir.exists():
+            return {"captures": []}
+
+        captures = []
+        for file_path in captures_dir.glob("capture_*.jpg"):
+            try:
+                stat = file_path.stat()
+
+                # Parse timestamp from filename (capture_YYYYMMDD_HHMMSS_state.jpg)
+                name_parts = file_path.stem.split("_")
+                if len(name_parts) >= 4:
+                    date_str = name_parts[1]
+                    time_str = name_parts[2]
+                    state = name_parts[3]
+                    timestamp_str = f"{date_str}_{time_str}"
+                    created_time = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                else:
+                    created_time = datetime.fromtimestamp(stat.st_mtime)
+                    state = "unknown"
+
+                captures.append({
+                    "filename": file_path.name,
+                    "size": stat.st_size,
+                    "created": created_time.isoformat(),
+                    "state": state,
+                    "url": f"/captures/{file_path.name}"
+                })
+            except Exception as e:
+                print(f"[WEB] Error processing capture {file_path.name}: {e}")
+
+        # Sort by creation time, newest first
+        captures.sort(key=lambda x: x["created"], reverse=True)
+
+        return {"captures": captures}
+
+    async def serve_capture(self, filename: str):
+        """Serve a captured image file"""
+        # Validate filename to prevent directory traversal
+        if not filename.endswith('.jpg') or '/' in filename or '\\' in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+
+        captures_dir = Path("captures")
+        file_path = captures_dir / filename
+
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Capture not found")
+
+        return FileResponse(
+            str(file_path),
+            media_type='image/jpeg',
+            filename=filename
+        )
+
     def get_index_html(self) -> str:
         return '''
 <!DOCTYPE html>
@@ -386,7 +456,7 @@ class WebApp:
         .state-supervised { color: #4CAF50; }
         .state-unsupervised { color: #ff9800; }
         .state-alert { color: #f44336; font-weight: bold; }
-        .recordings {
+        .recordings, .captures-section {
             background: white;
             padding: 20px;
             border-radius: 8px;
@@ -442,6 +512,56 @@ class WebApp:
         }
         .download-btn:hover {
             background: #45a049;
+        }
+        .capture-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+            gap: 15px;
+        }
+        .capture-item:last-child {
+            border-bottom: none;
+        }
+        .capture-thumbnail {
+            width: 80px;
+            height: 60px;
+            border-radius: 4px;
+            object-fit: cover;
+            cursor: pointer;
+        }
+        .capture-info {
+            flex: 1;
+        }
+        .capture-title {
+            font-weight: bold;
+            color: #333;
+        }
+        .capture-meta {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+        .state-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: bold;
+            color: white;
+            margin-left: 10px;
+        }
+        .state-badge.alert {
+            background-color: #f44336;
+        }
+        .state-badge.unsupervised {
+            background-color: #ff9800;
+        }
+        .state-badge.supervised {
+            background-color: #4CAF50;
+        }
+        .state-badge.idle {
+            background-color: #999;
         }
         #videoModal {
             display: none;
@@ -526,6 +646,13 @@ class WebApp:
         <div class="events">
             <h2>Recent Events</h2>
             <div id="eventsList"></div>
+        </div>
+
+        <div class="captures-section">
+            <h2>📸 Event Captures</h2>
+            <div id="capturesList">
+                <p>Loading event captures...</p>
+            </div>
         </div>
 
         <div class="recordings">
@@ -816,9 +943,114 @@ class WebApp:
             updateFrameInterval();
         });
 
+        async function loadEventCaptures() {
+            try {
+                const response = await fetch("/captures");
+                if (response.ok) {
+                    const data = await response.json();
+                    displayEventCaptures(data.captures);
+                } else {
+                    document.getElementById("capturesList").innerHTML = "<p>Failed to load event captures</p>";
+                }
+            } catch (error) {
+                console.error("Error loading event captures:", error);
+                document.getElementById("capturesList").innerHTML = "<p>Error loading event captures</p>";
+            }
+        }
+
+        function displayEventCaptures(captures) {
+            const capturesList = document.getElementById("capturesList");
+
+            if (captures.length === 0) {
+                capturesList.innerHTML = "<p>No event captures available</p>";
+                return;
+            }
+
+            const capturesHtml = captures.map(capture => {
+                const date = new Date(capture.created);
+                const formattedDate = date.toLocaleString();
+                const fileSizeKB = (capture.size / 1024).toFixed(1);
+
+                return `
+                    <div class="capture-item">
+                        <img src="${capture.url}" alt="Event Capture" class="capture-thumbnail"
+                             onclick="viewCaptureImage('${capture.url}', '${capture.filename}')">
+                        <div class="capture-info">
+                            <div class="capture-title">${capture.filename}</div>
+                            <div class="capture-meta">
+                                📅 ${formattedDate} | 💾 ${fileSizeKB} KB
+                                <span class="state-badge ${capture.state}">${capture.state.toUpperCase()}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            capturesList.innerHTML = capturesHtml;
+        }
+
+        function viewCaptureImage(url, filename) {
+            const modal = document.getElementById("videoModal");
+            const modalContent = modal.querySelector('.modal-content');
+
+            // Replace video with image for capture viewing
+            const existingVideo = modal.querySelector('#modalVideo');
+            const existingImage = modal.querySelector('#modalImage');
+
+            if (existingVideo) existingVideo.style.display = 'none';
+
+            if (!existingImage) {
+                const img = document.createElement('img');
+                img.id = 'modalImage';
+                img.style.width = '100%';
+                img.style.maxWidth = '800px';
+                img.style.borderRadius = '4px';
+                modalContent.appendChild(img);
+            }
+
+            const img = modal.querySelector('#modalImage');
+            img.src = url;
+            img.style.display = 'block';
+
+            modal.style.display = "block";
+
+            // Add title to modal
+            const existingTitle = modal.querySelector('.video-title');
+            if (existingTitle) {
+                existingTitle.remove();
+            }
+
+            const title = document.createElement('h3');
+            title.className = 'video-title';
+            title.textContent = filename;
+            title.style.margin = '0 0 15px 0';
+
+            modalContent.insertBefore(title, img);
+        }
+
+        // Update closeVideoModal to handle images too
+        const originalCloseModal = closeVideoModal;
+        closeVideoModal = function() {
+            const modal = document.getElementById("videoModal");
+            const video = document.getElementById("modalVideo");
+            const image = document.getElementById("modalImage");
+
+            modal.style.display = "none";
+            if (video) {
+                video.pause();
+                video.src = "";
+                video.style.display = 'block';
+            }
+            if (image) {
+                image.src = "";
+                image.style.display = 'none';
+            }
+        }
+
         connectWebSocket();
         loadRecentEvents();
         loadRecordings();
+        loadEventCaptures();
     </script>
 </body>
 </html>
